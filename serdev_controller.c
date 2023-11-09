@@ -9,6 +9,7 @@
 #include <linux/uaccess.h>
 #include <linux/cdev.h>
 #include <linux/ioctl.h>
+#include <linux/proc_fs.h>
 
 /* Meta Information */
 MODULE_LICENSE("GPL");
@@ -35,6 +36,10 @@ MODULE_PARM_DESC(read_active, "Indicate whether or not the state should be read 
 
 /* Define IOCTL */
 #define R_FLIP _IOW('a', 'b', int32_t *)
+
+/* Define data for procfs entry */
+static struct proc_dir_entry *proc_folder;
+static struct proc_dir_entry *proc_file;
 
 /* Declare the function prototypes */
 static int serdev_echo_probe(struct serdev_device *serdev);
@@ -205,6 +210,9 @@ static ssize_t dev_read(struct file *filp, char *buf, size_t len, loff_t *off)
 	return bytes_read;
 }
 
+/**
+ *  @brief This function handles the ioctl comands for this module
+ * */
 static long int handle_ioctl(struct file *file, unsigned cmd, unsigned long arg){
 	switch(cmd){
 		case R_FLIP:
@@ -214,6 +222,50 @@ static long int handle_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	return 0;
 }
 
+/**
+ *  @brief This function facillitates reading from the entry in /proc
+ * */
+static ssize_t read_proc(struct file *filp, char *usr_buffer, size_t len, loff_t *offset)
+{
+	char des[] = "This is a kernel driver that facillitates communication between the user space, and a physical game controller.\n";
+	int bytes_read = 0;
+	const char *des_ptr = des;
+	
+	if(!*(des_ptr + *offset))
+	{
+		*offset = 0;
+		return 0;
+	}
+	
+	des_ptr += *offset;
+	
+	while(len && *des_ptr)
+	{
+		put_user(*(des_ptr++), usr_buffer++);
+		len--;
+		bytes_read++;
+	}
+	
+	*offset += bytes_read;
+	return bytes_read;
+}
+
+
+/**
+ * @brief This function handles writing via procfs (writing not supported)
+ * */
+ static ssize_t write_proc(struct file *filp, const char * usr_buffer, size_t len, loff_t *offset)
+ {
+	printk(KERN_ALERT "GameDriver: Write is not supported.\n");
+	return -EINVAL;
+ }
+ 
+ /* Map the procfs functions to the procfs struct */
+ static struct proc_ops procfops = {
+	.proc_read = read_proc,
+	.proc_write = write_proc, 
+ };
+ 
 /**
  * @brief This function is called, when the module is loaded into the kernel
  */
@@ -231,7 +283,7 @@ static int __init my_init(void) {
 		return -1;
 	}
 
-	printk("GameDriver: Device number --> Major: %d, Minor: %d\n", Major >> 20, Major && 0xfffff);
+	printk(KERN_INFO "GameDriver: Device number --> Major: %d, Minor: %d\n", Major >> 20, Major && 0xfffff);
 	if((my_class = class_create(THIS_MODULE, DRIVER_CLASS)) == NULL)
 	{
 		printk(KERN_ALERT "GameDriver: Device class could not be created.\n");
@@ -250,6 +302,23 @@ static int __init my_init(void) {
 		printk(KERN_ALERT "GameDriver: Failed to register device to kernel.\n");
 		goto AddError;
 	}
+	
+	proc_folder = proc_mkdir("GameDriver", NULL);
+	if(proc_folder == NULL)
+	{
+		printk(KERN_ALERT "GameDriver: Could not create /proc/GameDriver.\n");
+		return -ENOMEM;
+	}
+	
+	proc_file = proc_create("About", 0666, proc_folder, &procfops);
+	if(proc_file == NULL)
+	{
+		printk(KERN_ALERT "GameDriver: Could not create /proc/GameDriver/About.\n");
+		proc_remove(proc_folder);
+		return -ENOMEM;
+	}
+	
+	printk(KERN_INFO "GameDriver: Setup complete.\n");
 
 	return 0;
 
@@ -273,6 +342,9 @@ static void __exit my_exit(void) {
 	device_destroy(my_class, Major);
 	class_destroy(my_class);
 	unregister_chrdev(Major, DEV_NAME);
+	
+	proc_remove(proc_file);
+	proc_remove(proc_folder);
 	
 	printk(KERN_INFO "GameDriver: Finished Unloading.\n");
 }
